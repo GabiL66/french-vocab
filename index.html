@@ -395,6 +395,7 @@ input:not([type=file]):not([type=checkbox]):not([type=radio]):not([type=range]),
 .set-row .gp-btn{width:30px;height:30px;font-size:14px;font-weight:700;}
 .set-row .gp-num{font-size:14px;font-weight:700;color:var(--txt);min-width:48px;text-align:center;}
 .set-plan{padding:9px 0;font-size:14px;font-weight:700;color:var(--txt2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pass-undo{border:1.5px solid var(--bdr);background:var(--sur);color:var(--txt);border-radius:999px;font-weight:800;font-size:15px;padding:14px;cursor:pointer;font-family:var(--f);}
 </style>
 </head>
 <body>
@@ -2028,13 +2029,14 @@ function renderPass(word){
       </div>
     </div>
     <div class="explain-panel" id="explain-panel" style="margin-top: -10px; margin-bottom: 20px;"></div>
-    <div class="fc-buttons" id="fc-buttons" style="grid-template-columns:1fr 1fr">
-      <button class="fc-btn fc-know" onclick="passAnswer(true)"><div style="font-size:22px;">✅</div><div>认识</div></button>
-      <button class="fc-btn fc-no" onclick="passAnswer(false)"><div style="font-size:22px;">❌</div><div>不认识</div></button>
+    <div class="fc-buttons" id="fc-buttons" style="grid-template-columns:1fr 1fr 1fr">
+      <button class="fc-btn fc-know" onclick="passAnswer('know')"><div style="font-size:22px;">✅</div><div>认识</div></button>
+      <button class="fc-btn fc-hes" onclick="passAnswer('fuzzy')"><div style="font-size:22px;">🤔</div><div>模糊</div></button>
+      <button class="fc-btn fc-no" onclick="passAnswer('no')"><div style="font-size:22px;">❌</div><div>不认识</div></button>
     </div>`;
   setTimeout(()=>playAudio(word.fr),250);
 }
-function passAnswer(known){
+function passAnswer(kind){
   if(G.answered) return;
   G.answered=true;
   const word=G.pool[G.current];
@@ -2042,21 +2044,47 @@ function passAnswer(known){
   if(bw) bw.seenCount++;
   recordView();
   G.totalAnswered++;
-  if(known){
-    if(bw) bw.masteryCount=Math.min((bw.masteryCount||0)+1,5);
+  G.passUndo=null;
+  if(kind==='know'){
+    if(bw){ G.passUndo={id:bw.id,snap:{stability:bw.stability,difficulty:bw.difficulty,reps:bw.reps,lapses:bw.lapses,state:bw.state,due:bw.due,lastReview:bw.lastReview,firstReview:bw.firstReview,masteryCount:bw.masteryCount}}; bw.masteryCount=Math.min((bw.masteryCount||0)+1,5); }
     gradeAnswer(bw,3);
+  } else if(kind==='fuzzy'){
+    gradeAnswer(bw,2);   // 模糊 → Hard：很快会再出现
   } else {
     G.wrongIds.add(word.id);
     if(bw) bw.masteryCount=0;
-    gradeAnswer(bw,1);   // 答"不认识"→ FSRS 排到明天
+    gradeAnswer(bw,1);   // 不认识 → 明天再过
   }
   saveDB();
   const fc=document.getElementById('flashcard'); if(fc) fc.classList.add('flipped');
   const btns=document.getElementById('fc-buttons');
+  if(kind==='know'){
+    // 认识 → 显示释义 1.5 秒后自动下一个；这段时间里发现意思不对，可以点"其实不对"
+    btns.style.gridTemplateColumns='1fr 1fr';
+    btns.innerHTML='<button class="fc-next-btn" onclick="passNext()">▶ 下一个</button><button class="pass-undo" onclick="passUndo()">✗ 其实不对</button>';
+    G.passTimer=setTimeout(passNext,1500);
+  } else {
+    btns.style.gridTemplateColumns='1fr';
+    btns.innerHTML='<button class="fc-next-btn" onclick="passNext()">▶ 下一个</button>';
+  }
+}
+// 点了"认识"但翻面后发现意思不对：撤销这次评分，按"不认识"重记（明天再过）
+function passUndo(){
+  const u=G.passUndo; if(!u) return;
+  if(G.passTimer){ clearTimeout(G.passTimer); G.passTimer=null; }
+  const bw=getBook(G.bookId).words.find(w=>w.id===u.id);
+  if(bw){
+    Object.assign(bw,u.snap);
+    G.fsrsDone.delete(bw.id);
+    G.wrongIds.add(bw.id);
+    bw.masteryCount=0;
+    gradeAnswer(bw,1);
+  }
+  G.passUndo=null; saveDB();
+  const btns=document.getElementById('fc-buttons');
   btns.style.gridTemplateColumns='1fr';
-  btns.innerHTML=`<button class="fc-next-btn" onclick="passNext()">▶ 下一个</button>`;
-  // 认识 → 短暂显示释义后自动下一个；不认识 → 停下来看释义，点下一个
-  if(known) G.passTimer=setTimeout(passNext,800);
+  btns.innerHTML='<button class="fc-next-btn" onclick="passNext()">▶ 下一个（已改记为不认识）</button>';
+  showToast('已改记为「不认识」，明天再过');
 }
 function passNext(){
   if(G.passTimer){ clearTimeout(G.passTimer); G.passTimer=null; }
@@ -2325,7 +2353,8 @@ function onGPBtn(idx,gp){
     const fb=document.querySelectorAll('.fc-btn:not([disabled])');
     if(fb.length){
       if(btn===0&&fb[0]) fb[0].click();            // 认识
-      else if((btn===1||btn===2)&&fb[1]) fb[1].click(); // 不认识
+      else if(btn===2&&fb[1]) fb[1].click();       // 模糊
+      else if(btn===1&&fb[2]) fb[2].click();       // 不认识
     } else {
       const nb=document.querySelector('.fc-next-btn');
       if(nb&&(btn===0||btn===1||btn===2)) nb.click();
